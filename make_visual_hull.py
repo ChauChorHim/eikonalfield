@@ -1,14 +1,15 @@
 """
 Packages: trimesh, PyMCubes
 """
-import cv2
+import cv2  # for unit test
 import numpy as np
 import json
-from os import path
+import os
 from tqdm import tqdm
 import trimesh
 import mcubes
 import pickle
+import imageio
 
 from run_nerf import config_parser
 from load_llff import load_llff_data
@@ -22,15 +23,25 @@ def to_view_matrix(mat):
     Returns:
       - ret: np.ndarray, [4, 4]
     """
+
     ret = np.eye(4)
     ret[:3, :3] = mat[:3, :3].T
     ret[:3, 3] = (-mat[:3, :3].T @ mat[:3, 3:]).reshape(-1)
-    # need to adjust the axis, I don't why :(
-    # ret[0, 0] *= -1
-    # ret[1, 1] *= -1
-    # ret[2, 1] *= -1
+
     return ret
 
+def blender_to_colmap(mat):
+    ret = np.eye(4)
+    ret[:3, 3] = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]) @ mat[:3, 3]
+    ret[:3, :3] = np.array([[1, 0, 0],
+                            [0, 0, -1],
+                            [0, 1, 0]]) \
+                  @ mat[:3, :3] @ \
+                  np.array([[1, 0, 0],
+                            [0, -1, 0],
+                            [0, 0, -1]])
+
+    return ret
 
 def project_2d(pts, cam_mat, view_mat):
     """
@@ -50,14 +61,19 @@ def project_2d(pts, cam_mat, view_mat):
 
 
 def unit_test_proejct_origin(args, cam_mat, view_mats, imgs):
-    pts = np.array([[0.15, 0.15, 0.15, 1.0],
-                    [-0.15, 0.15, 0.15, 1.0],
-                    [0.15, -0.15, 0.15, 1.0],
-                    [0.15, 0.15, -0.15, 1.0],
-                    [-0.15, -0.15, 0.15, 1.0],
-                    [-0.15, 0.15, -0.15, 1.0],
-                    [0.15, -0.15, -0.15, 1.0],
-                    [-0.15, -0.15, -0.15, 1.0]]).reshape(1, 1, 8, 4)
+
+    X, Y, Z = np.meshgrid(np.linspace(0, 1, args.grid_size),
+                          np.linspace(0, 1, args.grid_size),
+                          np.linspace(0, 1, args.grid_size))
+
+    X = X * 0.3 - 0.15
+    Y = Y * 0.3 - 0.15
+    Z = Z * 0.3 - 0.15
+
+    pts = np.concatenate([np.stack([X, Y, Z], axis=-1),
+                          np.ones((args.grid_size, args.grid_size, args.grid_size, 1))],
+                         axis=-1)
+
     dictionary = args.basedir + "/unit_test/"
 
     j = 0
@@ -67,10 +83,11 @@ def unit_test_proejct_origin(args, cam_mat, view_mats, imgs):
         img *= 254
         uv = uv.reshape(-1, 3)
         for i in range(uv.shape[0]):
-            img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, i * 25))
+            # img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, i * 25))
+            img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, 0))
             # img[(int(uv[i, 1]) - 10):(int(uv[i, 1]) + 10), (int(uv[i, 0]) - 10):(int(uv[i, 0]) + 10)] = 0
 
-        cv2.imwrite(path.join(dictionary, str(j) + '.png'), img)
+        cv2.imwrite(os.path.join(dictionary, str(j) + '.png'), img)
         j += 1
 
     quit()
@@ -89,62 +106,52 @@ def main():
     parser = config_parser()
     parser.add_argument("--grid_size", type=int, default=128,
                         help='the size of ior field, number of the voxels per dim')
-    parser.add_argument("--blender_near", type=float, default=0.1,
-                        help='near value in blender')
-    parser.add_argument("--blender_far", type=float, default=6.,
-                        help='far value in blender')
     parser.add_argument("--threshold", type=float, default=0.9,
                         help='threshold for marching cube')
     args = parser.parse_args()
 
     if args.dataset_type == 'llff':
-        images, poses, bds, render_poses, i_test = load_llff_data(args.datadir, args.factor,
-                                                                  recenter=True, bd_factor=.75,
-                                                                  spherify=args.spherify)
+
+        # poses: blender/cg coordinates systems
+        images, poses, _, _, _ = load_llff_data(args.datadir, args.factor,
+                                           recenter=True, bd_factor=.75,
+                                           spherify=args.spherify)
+
         hwf = poses[0, :3, -1]
         poses = poses[:, :3, :4]
-        i_test = []
-        print('Loaded llff', images.shape, render_poses.shape, hwf, args.datadir)
-        if not isinstance(i_test, list):
-            i_test = [i_test]
 
-        if args.llffhold > 0:
-            print('Auto LLFF holdout,', args.llffhold)
-            i_test = np.arange(images.shape[0])[::args.llffhold]
+        masks_dir = os.path.join(args.datadir, 'masks')
 
-        i_val = i_test
-        i_train = np.array([i for i in np.arange(int(images.shape[0])) if
-                            (i not in i_test and i not in i_val)])
+        def imread(f):
+            if f.endswith('png'):
+                return imageio.imread(f, ignoregamma=True)
+            else:
+                return imageio.imread(f)
 
-        print('DEFINING BOUNDS')
-        if args.no_ndc:
-            near = np.ndarray.min(bds) * .9
-            far = np.ndarray.max(bds) * 1.
+        mask_files = [os.path.join(masks_dir, f) for f in sorted(os.listdir(masks_dir)) if
+                      f.endswith('JPG') or f.endswith('jpg') or f.endswith('png')]
 
-        else:
-            near = 0.
-            far = 1.
+        masks_tmp = [imread(f) == 255 for f in mask_files]
+        masks = []
+        for mask in masks_tmp:
+            if mask.ndim == 3:
+                mask = mask[..., 0]
+            masks.append(mask)
 
-        if args.spherify:
-            far = np.minimum(far, 2.0)
+        print('Loaded llff', images.shape, hwf, args.datadir)
 
     elif args.dataset_type == 'blender':
         args.half_res = False
-        images, poses, render_poses, hwf, i_split = \
-            load_blender_data(args.datadir, args.half_res, args.testskip)
-        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
-        i_train, i_val, i_test = i_split
-
-        near = args.blender_near
-        far = args.blender_far
+        images, poses, _, hwf, _ = load_blender_data(args.datadir, args.half_res, args.testskip)
 
         if args.white_bkgd:
             images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
         else:
             images = images[..., :3]
 
-    print('NEAR FAR', near, far)
+        masks = images[..., 0] != 0
 
+        print('Loaded blender', images.shape, hwf, args.datadir)
 
     H, W, focal = hwf
     H, W = int(H), int(W)
@@ -158,15 +165,13 @@ def main():
 
     p_mat = np.concatenate([cam_mat, np.zeros((3, 1))], axis=1)
 
-    # Load or create mask for the images
-    masks = images[..., 0] != 0
-
     num_imgs = len(masks)
+
     trans_mats = poses
 
     view_mats = []
     for pose in trans_mats:
-        view_mats.append(to_view_matrix(pose))
+        view_mats.append(to_view_matrix(blender_to_colmap(pose)))
     view_mats = np.array(view_mats)
 
     # unit test
@@ -182,6 +187,9 @@ def main():
     x_max, y_max, z_max = max_point
     x_min, y_min, z_min = min_point
 
+    x_max = y_max = z_max = 0.3
+    x_min = y_min = z_min = -0.3
+
     X = X * (x_max - x_min) + x_min
     Y = Y * (y_max - y_min) + y_min
     Z = Z * (z_max - z_min) + z_min
@@ -190,30 +198,60 @@ def main():
                          axis=-1)
     voxel_grid = np.ones((args.grid_size, args.grid_size, args.grid_size))
 
-    # Project visual hull
-    for view_mat, mask_img in tqdm(zip(view_mats, masks), total=num_imgs):
-        uvs, zs = project_2d(pts, p_mat, view_mat)
+    # from matplotlib import pyplot as plt
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111, projection='3d')
+    # ax.scatter(X, Y, Z, s=0.1)
+    # plt.show()
 
+    # Project visual hull
+    for view_mat, mask_img, img in tqdm(zip(view_mats, masks, images), total=num_imgs):
+        uvs, zs = project_2d(pts, p_mat, view_mat)
         us = np.clip(np.round(uvs[..., 0]), 0, mask_img.shape[1] - 1).astype(int)  # width
         vs = np.clip(np.round(uvs[..., 1]), 0, mask_img.shape[0] - 1).astype(int)  # height
 
-        # outside = mask_img[vs.reshape(-1), us.reshape(-1)] == False
-        # outside = outside.reshape(args.grid_size, args.grid_size, args.grid_size)
-        outside = mask_img[us, vs] == False
-
+        # outside = mask_img[vs, us] == False
+        outside = np.where(mask_img[vs, us] == False)
         voxel_grid[outside] = 0
 
-    np.save("logs/voxel_grid.npy", voxel_grid)
+        # inside = mask_img[vs, us] == True
+        # voxel_grid += inside
 
+        # from matplotlib import pyplot as plt
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection='3d')
+        # ax.scatter(X, Y, Z, alpha=np.uint8(inside.reshape(-1)), s=0.1)
+        # plt.show()
+
+
+    # np.save(os.path.join(args.datadir, "voxel_grid.npy"), voxel_grid)
     # voxel_grid = np.load("logs/voxel_grid.npy")
 
     # from matplotlib import pyplot as plt
     # fig = plt.figure()
     # ax = fig.add_subplot(111, projection='3d')
-    # ax.scatter(X, Y, Z, alpha=voxel_grid.reshape(-1))
+    # # ax.scatter(X, Y, Z, alpha=voxel_grid.reshape(-1), s=0.1)
+    # ax.scatter(X.reshape(-1), Y.reshape(-1), Z.reshape(-1), alpha=voxel_grid.reshape(-1), s=1)
     # plt.show()
 
-    quit()
+    # test_idx = np.where(voxel_grid == 1)
+    # test_pts = pts[test_idx].reshape(1, 1, -1, 4)
+    # dictionary = args.basedir + "/unit_test/"
+    # j = 0
+    # for view_mat, img in tqdm(zip(view_mats, images)):
+    #     uv, z = project_2d(test_pts, p_mat, view_mat)
+    #     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    #     img *= 254
+    #     uv = uv.reshape(-1, 3)
+    #     for i in range(uv.shape[0]):
+    #         # img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, i * 25))
+    #         img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, 0))
+    #         # img[(int(uv[i, 1]) - 10):(int(uv[i, 1]) + 10), (int(uv[i, 0]) - 10):(int(uv[i, 0]) + 10)] = 0
+    #
+    #     cv2.imwrite(os.path.join(dictionary, str(j) + '.png'), img)
+    #     j += 1
+    #
+    # quit()
 
     # Marching cube
     # with open(path.join(args.datadir, 'mesh.pkl'), 'wb') as f:
@@ -235,7 +273,7 @@ def main():
     vertices[..., 2] = vertices[..., 2] * (z_max - z_min) + z_min
 
     mesh = trimesh.Trimesh(vertices, triangles)
-    mesh.export(path.join(args.basedir, f'mesh_{args.grid_size}_{args.threshold}.obj'))
+    mesh.export(os.path.join(args.datadir, f'mesh_{args.grid_size}_{args.threshold}.obj'))
 
 
 if __name__ == '__main__':
