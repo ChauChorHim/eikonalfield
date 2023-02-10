@@ -15,6 +15,37 @@ from run_nerf import config_parser
 from load_llff import load_llff_data
 from load_blender import load_blender_data
 
+def unit_test_proejct_origin(args, cam_mat, view_mats, imgs):
+
+    X, Y, Z = np.meshgrid(np.linspace(0, 1, args.grid_size),
+                          np.linspace(0, 1, args.grid_size),
+                          np.linspace(0, 1, args.grid_size))
+
+    X = X * 0.3 - 0.15
+    Y = Y * 0.3 - 0.15
+    Z = Z * 0.3 - 0.15
+
+    pts = np.concatenate([np.stack([X, Y, Z], axis=-1),
+                          np.ones((args.grid_size, args.grid_size, args.grid_size, 1))],
+                         axis=-1)
+
+    dictionary = args.basedir + "/unit_test/"
+
+    j = 0
+    for view_mat, img in tqdm(zip(view_mats, imgs)):
+        uv, z = project_2d(pts, cam_mat, view_mat)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        img *= 254
+        uv = uv.reshape(-1, 3)
+        for i in range(uv.shape[0]):
+            # img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, i * 25))
+            img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, 0))
+            # img[(int(uv[i, 1]) - 10):(int(uv[i, 1]) + 10), (int(uv[i, 0]) - 10):(int(uv[i, 0]) + 10)] = 0
+
+        cv2.imwrite(os.path.join(dictionary, str(j) + '.png'), img)
+        j += 1
+
+    quit()
 
 def to_view_matrix(mat):
     """
@@ -59,46 +90,16 @@ def project_2d(pts, cam_mat, view_mat):
     uv[..., :2] /= uv[..., 2:3]
     return uv, z
 
-
-def unit_test_proejct_origin(args, cam_mat, view_mats, imgs):
-
-    X, Y, Z = np.meshgrid(np.linspace(0, 1, args.grid_size),
-                          np.linspace(0, 1, args.grid_size),
-                          np.linspace(0, 1, args.grid_size))
-
-    X = X * 0.3 - 0.15
-    Y = Y * 0.3 - 0.15
-    Z = Z * 0.3 - 0.15
-
-    pts = np.concatenate([np.stack([X, Y, Z], axis=-1),
-                          np.ones((args.grid_size, args.grid_size, args.grid_size, 1))],
-                         axis=-1)
-
-    dictionary = args.basedir + "/unit_test/"
-
-    j = 0
-    for view_mat, img in tqdm(zip(view_mats, imgs)):
-        uv, z = project_2d(pts, cam_mat, view_mat)
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        img *= 254
-        uv = uv.reshape(-1, 3)
-        for i in range(uv.shape[0]):
-            # img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, i * 25))
-            img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, 0))
-            # img[(int(uv[i, 1]) - 10):(int(uv[i, 1]) + 10), (int(uv[i, 0]) - 10):(int(uv[i, 0]) + 10)] = 0
-
-        cv2.imwrite(os.path.join(dictionary, str(j) + '.png'), img)
-        j += 1
-
-    quit()
-
-
 def create_init_bounding_box(trans_mats):
-    poses = np.array(trans_mats)[:, :3, 3]
+    poses = []
+    for pose in trans_mats:
+        poses.append(blender_to_colmap(pose))
+
+    poses = np.array(poses)[:, :3, 3]
     pose_avg = np.mean(poses, axis=0)
     max_point = np.max(poses, axis=0)
     min_point = np.min(poses, axis=0)
-    side = np.max(max_point - min_point) * 0.5
+    side = np.max(max_point - min_point)
     return pose_avg + np.ones_like(pose_avg) * side * 0.5, pose_avg - np.ones_like(pose_avg) * side * 0.5
 
 
@@ -106,8 +107,6 @@ def main():
     parser = config_parser()
     parser.add_argument("--grid_size", type=int, default=128,
                         help='the size of ior field, number of the voxels per dim')
-    parser.add_argument("--threshold", type=float, default=0.9,
-                        help='threshold for marching cube')
     args = parser.parse_args()
 
     if args.dataset_type == 'llff':
@@ -178,17 +177,19 @@ def main():
     # unit_test_proejct_origin(args, p_mat, view_mats, images)
 
     # Create voxel grid
-
     max_point, min_point = create_init_bounding_box(trans_mats)
+    print("max_point: ", max_point)
+    print("min_point: ", min_point)
+    x_max, y_max, z_max = max_point
+    x_min, y_min, z_min = min_point
+
+    # adjust x_max, y_max, z_max, x_min, y_min, z_min according to the initial values above
+    x_max = y_max = z_max = 0.4
+    x_min = y_min = z_min = -0.4
 
     X, Y, Z = np.meshgrid(np.linspace(0, 1, args.grid_size),
                           np.linspace(0, 1, args.grid_size),
                           np.linspace(0, 1, args.grid_size))
-    x_max, y_max, z_max = max_point
-    x_min, y_min, z_min = min_point
-
-    x_max = y_max = z_max = 0.3
-    x_min = y_min = z_min = -0.3
 
     X = X * (x_max - x_min) + x_min
     Y = Y * (y_max - y_min) + y_min
@@ -197,12 +198,6 @@ def main():
                           np.ones((args.grid_size, args.grid_size, args.grid_size, 1))],
                          axis=-1)
     voxel_grid = np.ones((args.grid_size, args.grid_size, args.grid_size))
-
-    # from matplotlib import pyplot as plt
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111, projection='3d')
-    # ax.scatter(X, Y, Z, s=0.1)
-    # plt.show()
 
     # Project visual hull
     for view_mat, mask_img, img in tqdm(zip(view_mats, masks, images), total=num_imgs):
@@ -214,66 +209,41 @@ def main():
         outside = np.where(mask_img[vs, us] == False)
         voxel_grid[outside] = 0
 
-        # inside = mask_img[vs, us] == True
-        # voxel_grid += inside
 
-        # from matplotlib import pyplot as plt
-        # fig = plt.figure()
-        # ax = fig.add_subplot(111, projection='3d')
-        # ax.scatter(X, Y, Z, alpha=np.uint8(inside.reshape(-1)), s=0.1)
-        # plt.show()
+    import pandas as pd
+    from pyntcloud import PyntCloud
 
+    mask = np.where(voxel_grid > 0)    # 0: air, 1: object
+    cloud = PyntCloud(pd.DataFrame(
+        # same arguments that you are passing to visualize_pcl
+        data=np.hstack((pts[mask][..., 0:3].reshape(-1, 3),
+                        voxel_grid[mask].reshape(-1, 1),
+                        voxel_grid[mask].reshape(-1, 1),
+                        voxel_grid[mask].reshape(-1, 1))),
+        columns=["x", "y", "z", "red", "green", "blue"]))
 
-    # np.save(os.path.join(args.datadir, "voxel_grid.npy"), voxel_grid)
-    # voxel_grid = np.load("logs/voxel_grid.npy")
+    cloud.to_file(os.path.join(args.datadir, f'pcd_{args.grid_size}.ply'))
 
-    # from matplotlib import pyplot as plt
-    # fig = plt.figure()
-    # ax = fig.add_subplot(111, projection='3d')
-    # # ax.scatter(X, Y, Z, alpha=voxel_grid.reshape(-1), s=0.1)
-    # ax.scatter(X.reshape(-1), Y.reshape(-1), Z.reshape(-1), alpha=voxel_grid.reshape(-1), s=1)
-    # plt.show()
-
-    # test_idx = np.where(voxel_grid == 1)
-    # test_pts = pts[test_idx].reshape(1, 1, -1, 4)
-    # dictionary = args.basedir + "/unit_test/"
-    # j = 0
-    # for view_mat, img in tqdm(zip(view_mats, images)):
-    #     uv, z = project_2d(test_pts, p_mat, view_mat)
-    #     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    #     img *= 254
-    #     uv = uv.reshape(-1, 3)
-    #     for i in range(uv.shape[0]):
-    #         # img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, i * 25))
-    #         img = cv2.circle(img, (int(uv[i, 0]), int(uv[i, 1])), radius=1, thickness=20, color=(0, 0, 0))
-    #         # img[(int(uv[i, 1]) - 10):(int(uv[i, 1]) + 10), (int(uv[i, 0]) - 10):(int(uv[i, 0]) + 10)] = 0
-    #
-    #     cv2.imwrite(os.path.join(dictionary, str(j) + '.png'), img)
-    #     j += 1
-    #
-    # quit()
+    with open(os.path.join(args.datadir, 'voxel_grid.pkl'), 'wb') as f:
+        pickle.dump({
+            "data": voxel_grid,
+            "extent": 0,
+            "min_point": min_point,
+            "max_point": max_point,
+            "num_voxels": args.grid_size,
+        }, f)
 
     # Marching cube
-    # with open(path.join(args.datadir, 'mesh.pkl'), 'wb') as f:
-    #     pickle.dump({
-    #         "data": (count > args.threshold).reshape(-1, 1) * 0.33 + 1.0,  # IoR of glass is 1.5
-    #         "extent": 0,
-    #         "min_point": min_point,
-    #         "max_point": max_point,
-    #         "num_voxels": args.grid_size,
-    #     }, f)
-
-    # vertices, triangles = mcubes.marching_cubes(count >= args.threshold, 0.5)
-    vertices, triangles = mcubes.marching_cubes(voxel_grid, args.threshold)
-    print(f'Marching cube: {vertices.shape} vertices, {triangles.shape} triangles')
-
-    vertices /= args.grid_size
-    vertices[..., 0] = vertices[..., 0] * (x_max - x_min) + x_min
-    vertices[..., 1] = vertices[..., 1] * (y_max - y_min) + y_min
-    vertices[..., 2] = vertices[..., 2] * (z_max - z_min) + z_min
-
-    mesh = trimesh.Trimesh(vertices, triangles)
-    mesh.export(os.path.join(args.datadir, f'mesh_{args.grid_size}_{args.threshold}.obj'))
+    # vertices, triangles = mcubes.marching_cubes(voxel_grid, args.threshold)
+    # print(f'Marching cube: {vertices.shape} vertices, {triangles.shape} triangles')
+    #
+    # vertices /= args.grid_size
+    # vertices[..., 0] = vertices[..., 0] * (x_max - x_min) + x_min
+    # vertices[..., 1] = vertices[..., 1] * (y_max - y_min) + y_min
+    # vertices[..., 2] = vertices[..., 2] * (z_max - z_min) + z_min
+    #
+    # mesh = trimesh.Trimesh(vertices, triangles)
+    # mesh.export(os.path.join(args.datadir, f'mesh_{args.grid_size}_{args.threshold}.obj'))
 
 
 if __name__ == '__main__':
