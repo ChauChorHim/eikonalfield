@@ -9,3 +9,4 @@ trimesh
 PyMCubes
 opencv-contrib-python
 numpy
+pyntcloud
