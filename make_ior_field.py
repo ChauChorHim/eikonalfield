@@ -31,6 +31,15 @@ def main():
 
     grad_ior_field = np.gradient(ior_field)
 
+    with open(os.path.join(args.datadir, 'grad_ior_field.pkl'), 'wb') as f:
+        pickle.dump({
+            "data": grad_ior_field,
+            "extent": 0,
+            "min_point": voxel_grid_objects[0]['min_point'],
+            "max_point": voxel_grid_objects[0]['max_point'],
+            "num_voxels": voxel_grid_objects[0]['num_voxels'],
+        }, f)
+
     # pass
 
     # grid_size = voxel_grid_objects[0]['num_voxels']
