@@ -44,7 +44,9 @@ def main():
     X = X * (x_max - x_min) + x_min
     Y = Y * (y_max - y_min) + y_min
     Z = Z * (z_max - z_min) + z_min
-    voxel_grid_real_scale = np.concatenate(np.stack([X, Y, Z], axis=-1))
+    voxel_grid_real_scale = np.concatenate(np.stack([X.reshape(-1, 1),
+                                                     Y.reshape(-1, 1),
+                                                     Z.reshape(-1, 1)], axis=-1))
 
     with open(os.path.join(args.datadir, 'grad_ior_field.pkl'), 'wb') as f:
         pickle.dump({
