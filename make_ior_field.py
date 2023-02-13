@@ -19,6 +19,7 @@ def main():
             except EOFError:
                 break
 
+    # Compute gradient of IoR field
     voxel_grid = voxel_grid_objects[0]['data']
 
     k_s = 4
@@ -31,9 +32,24 @@ def main():
 
     grad_ior_field = np.gradient(ior_field)
 
+    # Compute voxel grid in real world scale
+    max_point = voxel_grid_objects[0]['max_point']
+    min_point = voxel_grid_objects[0]['min_point']
+    grid_size = voxel_grid_objects[0]['num_voxels']
+    X, Y, Z = np.meshgrid(np.linspace(0, 1, grid_size),
+                          np.linspace(0, 1, grid_size),
+                          np.linspace(0, 1, grid_size))
+    x_max, y_max, z_max = max_point
+    x_min, y_min, z_min = min_point
+    X = X * (x_max - x_min) + x_min
+    Y = Y * (y_max - y_min) + y_min
+    Z = Z * (z_max - z_min) + z_min
+    voxel_grid_real_scale = np.concatenate(np.stack([X, Y, Z], axis=-1))
+
     with open(os.path.join(args.datadir, 'grad_ior_field.pkl'), 'wb') as f:
         pickle.dump({
-            "data": grad_ior_field,
+            "grad_ior_field": grad_ior_field,
+            "voxel_grid_real_scale": voxel_grid_real_scale,
             "extent": 0,
             "min_point": voxel_grid_objects[0]['min_point'],
             "max_point": voxel_grid_objects[0]['max_point'],
