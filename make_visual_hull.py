@@ -63,14 +63,12 @@ def to_view_matrix(mat):
 
 def blender_to_colmap(mat):
     ret = np.eye(4)
-    ret[:3, 3] = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]) @ mat[:3, 3]
-    ret[:3, :3] = np.array([[1, 0, 0],
-                            [0, 0, -1],
-                            [0, 1, 0]]) \
-                  @ mat[:3, :3] @ \
-                  np.array([[1, 0, 0],
+    ret[:3, 3] = np.array([[1, 0, 0],
                             [0, -1, 0],
-                            [0, 0, -1]])
+                            [0, 0, -1]]) @ mat[:3, 3]
+    ret[:3, :3] = np.array([[1, 0, 0],
+                            [0, -1, 0],
+                            [0, 0, -1]]) @ mat[:3, :3]
 
     return ret
 
@@ -170,7 +168,7 @@ def main():
 
     view_mats = []
     for pose in trans_mats:
-        view_mats.append(to_view_matrix(blender_to_colmap(pose)))
+        view_mats.append(blender_to_colmap(to_view_matrix(pose)))
     view_mats = np.array(view_mats)
 
     # unit test
