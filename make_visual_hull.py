@@ -88,23 +88,25 @@ def project_2d(pts, cam_mat, view_mat):
     uv[..., :2] /= uv[..., 2:3]
     return uv, z
 
-def create_init_bounding_box(trans_mats):
-    poses = []
-    for pose in trans_mats:
-        poses.append(blender_to_colmap(pose))
-
-    poses = np.array(poses)[:, :3, 3]
-    pose_avg = np.mean(poses, axis=0)
-    max_point = np.max(poses, axis=0)
-    min_point = np.min(poses, axis=0)
-    side = np.max(max_point - min_point)
-    return pose_avg + np.ones_like(pose_avg) * side * 0.5, pose_avg - np.ones_like(pose_avg) * side * 0.5
+# def create_init_bounding_box(trans_mats):
+#     poses = []
+#     for pose in trans_mats:
+#         poses.append(blender_to_colmap(pose))
+#
+#     poses = np.array(poses)[:, :3, 3]
+#     pose_avg = np.mean(poses, axis=0)
+#     max_point = np.max(poses, axis=0)
+#     min_point = np.min(poses, axis=0)
+#     side = np.max(max_point - min_point)
+#     return pose_avg + np.ones_like(pose_avg) * side * 0.5, pose_avg - np.ones_like(pose_avg) * side * 0.5
 
 
 def main():
     parser = config_parser()
     parser.add_argument("--grid_size", type=int, default=128,
                         help='the size of ior field, number of the voxels per dim')
+    parser.add_argument("--real_scale", type=float, default=0.5,
+                        help='the length of the ior field in real life')
     args = parser.parse_args()
 
     if args.dataset_type == 'llff':
@@ -175,15 +177,17 @@ def main():
     # unit_test_proejct_origin(args, p_mat, view_mats, images)
 
     # Create voxel grid
-    max_point, min_point = create_init_bounding_box(trans_mats)
-    print("max_point: ", max_point)
-    print("min_point: ", min_point)
-    x_max, y_max, z_max = max_point
-    x_min, y_min, z_min = min_point
+    # max_point, min_point = create_init_bounding_box(trans_mats)
+    # print("max_point: ", max_point)
+    # print("min_point: ", min_point)
+    # x_max, y_max, z_max = max_point
+    # x_min, y_min, z_min = min_point
 
     # adjust x_max, y_max, z_max, x_min, y_min, z_min according to the initial values above
-    x_max = y_max = z_max = 0.4
-    x_min = y_min = z_min = -0.4
+    x_max = y_max = z_max = args.real_scale
+    x_min = y_min = z_min = -args.real_scale
+    max_point = np.array([x_max, y_max, z_max])
+    min_point = np.array([x_min, y_min, z_min])
 
     X, Y, Z = np.meshgrid(np.linspace(0, 1, args.grid_size),
                           np.linspace(0, 1, args.grid_size),
