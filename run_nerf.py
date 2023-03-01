@@ -515,13 +515,13 @@ def config_parser():
     # logging/saving options
     parser.add_argument("--i_print",   type=int, default=100, 
                         help='frequency of console printout and metric loggin')
-    parser.add_argument("--i_img",     type=int, default=1000, 
+    parser.add_argument("--i_img",     type=int, default=1000,
                         help='frequency of tensorboard image logging')
     parser.add_argument("--i_weights", type=int, default=1000, 
                         help='frequency of weight ckpt saving')
     parser.add_argument("--i_testset", type=int, default=400000, 
                         help='frequency of testset saving')
-    parser.add_argument("--i_video",   type=int, default=150000, 
+    parser.add_argument("--i_video",   type=int, default=150000,
                         help='frequency of render_poses video saving')
 
     return parser
@@ -567,8 +567,8 @@ def train():
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
 
-        near = 2.
-        far = 6.
+        near = 0.6
+        far = 1.0
 
         if args.white_bkgd:
             images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
@@ -832,7 +832,7 @@ def train():
                 testimgdir = os.path.join(basedir, expname, 'training_nerf')
                 os.makedirs(testimgdir, exist_ok=True)                    
                 imageio.imwrite(os.path.join(testimgdir, 'rendered_{:06d}.png'.format(i)), to8b(rgb.cpu().numpy()))
-                imageio.imwrite(os.path.join(testimgdir, 'ref_{:06d}.png'.format(img_i)), to8b(images[img_i].cpu().numpy()))
+                imageio.imwrite(os.path.join(testimgdir, 'ref_{:06d}.png'.format(img_i)), to8b(images[img_i]))
 
     
         if i%args.i_print==0:
