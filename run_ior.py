@@ -597,7 +597,19 @@ def train():
         if args.spherify:
             far = np.minimum(far,2.0)    
         print('NEAR FAR', near, far)
-    
+
+    elif args.dataset_type == 'blender':
+        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        i_train, i_val, i_test = i_split
+
+        near = 0.6
+        far = 1.0
+
+        if args.white_bkgd:
+            images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
+        else:
+            images = images[..., :3]
     
      # Cast intrinsics to right types
     H, W, focal = hwf
@@ -669,7 +681,7 @@ def train():
     
     
     print('loading bounding box values')
-    bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box\\bounding_box_vals.npy'))
+    bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box/bounding_box_vals.npy'))
     
     
     render_kwargs_test['bb_vals'] = bounding_box_vals
