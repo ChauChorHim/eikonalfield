@@ -1,4 +1,3 @@
-
 import os, sys, cv2
 import numpy as np
 import imageio
@@ -10,6 +9,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm, trange
 from torchdiffeq import odeint_adjoint as odeint
+
+from voxel_grid_to_network import voxel_grid_MLP
 
 import matplotlib.pyplot as plt
 
@@ -33,22 +34,32 @@ def get_rnd(all_rays,all_idx_inside,num_ray):
     all_ = []
     chunk_per_im = num_ray//len(all_idx_inside)
     for i in range(len(all_idx_inside)):
-        
+
             idx_inside  = all_idx_inside[i][np.random.choice(len(all_idx_inside[i]), size=[chunk_per_im], replace=False)] 
             all_.append(all_rays[i][idx_inside])
             
-    return torch.cat(all_,0)     
+    return torch.cat(all_,0)
 
+# def get_mask_idx(path_to_mask, num_im, i_train):
+#     mask_ = []
+#     for img_i in range(num_im):
+#         im = imageio.imread(os.path.join(path_to_mask, 'img_%0.3d.png' % (img_i)))
+#         im = np.float32(im) / 255.0
+#         im = im.reshape([-1])
+#         inside = np.where(im == 1.0)[0]
+#         mask_.append(inside)
+#
+#     mask = [mask_[i] for i in i_train]
+#
+#     return mask
 
-def get_mask_idx(path_to_mask,num_im,i_train):
+def get_mask_idx(masks,num_im,i_train):
     
     mask_ = []
     for img_i in range(num_im):
        
-        im = imageio.imread(os.path.join(path_to_mask, 'img_%0.3d.png'%(img_i)))
-        im = np.float32(im)/255.0
-        im = im.reshape([-1])
-        inside = np.where(im== 1.0)[0]
+        im = masks[img_i].reshape(-1)
+        inside = np.where(im == 1.0)[0]
         mask_.append(inside)
 
     
@@ -321,8 +332,8 @@ def create_models(args):
 
 
 class IoR_emissionAbsorptionODE(nn.Module):
-
-    def __init__(self,voxel_grid,query_fn,model,n_samples,step_size,bb_vals,scene_bound):
+    # def __init__(self, voxel_grid, query_fn, model, n_samples, step_size, bb_vals, scene_bound):
+    def __init__(self, voxel_grid, query_fn, model, n_samples, step_size, voxel_grid_mlp, scene_bound):
         super(IoR_emissionAbsorptionODE, self).__init__()
 
         self.voxel_grid = voxel_grid
@@ -330,7 +341,8 @@ class IoR_emissionAbsorptionODE(nn.Module):
         self.query_fn = query_fn
         self.n_samples = n_samples
         self.step_size = step_size
-        self.bounding_box_vals = bb_vals
+        # self.bounding_box_vals = bb_vals
+        self.voxel_grid_mlp = voxel_grid_mlp
         self.scene_bound = scene_bound
         
     def forward(self,t,y):
@@ -347,7 +359,10 @@ class IoR_emissionAbsorptionODE(nn.Module):
         
         
         # determining whether a point is inside the bounding box or not  
-        weights = get_bb_weights(pts,self.bounding_box_vals)
+        # weights = get_bb_weights(pts,self.bounding_box_vals)
+        outputs = self.voxel_grid_mlp(pts)
+        _, weights = torch.max(outputs.data, 1)
+        weights = weights.reshape((-1, 1))
 
 
         # finding the points inside the bounding box
@@ -357,6 +372,8 @@ class IoR_emissionAbsorptionODE(nn.Module):
 
         # setting the density to zero for the points inside the bounding box
         density= density*weights
+
+        torch.cuda.empty_cache()
         
         # calculating the gradient of IoR only for the points inside the bounding box
         if len(insides) > 0:
@@ -366,7 +383,8 @@ class IoR_emissionAbsorptionODE(nn.Module):
                 
                 dn = torch.autograd.functional.vjp(lambda x : self.query_fn(x,self.model), pts_inside ,v = torch.ones_like(pts_inside[:,0:1]),create_graph =True )                      
                 ior_grad[insides,:] = dn[1]*(1.-weights[insides,:])
-          
+                # ior_grad[insides,:] = dn[1]*(1.-weights[insides]).reshape(-1, 1)
+
     
     
         dv_ds = self.step_size*ior_grad
@@ -385,7 +403,8 @@ def render_rays(ray_batch,
                 voxel_grid,
                 N_samples,
                 network_query_fn_ior,
-                bb_vals,
+                # bb_vals,
+                voxel_grid_mlp,
                 network_ior,
                 scene_bound,
                 network_fn=None,
@@ -415,8 +434,9 @@ def render_rays(ray_batch,
     
     y0 = torch.cat((pts,viewdir,color_,transmition_),-1).to(device) 
     step_size =  far[0]-near[0]
-    output = odeint(IoR_emissionAbsorptionODE(voxel_grid,network_query_fn_ior,network_ior,N_samples,step_size,bb_vals,scene_bound), y0, t_vals,method='euler')
-    
+    # output = odeint(IoR_emissionAbsorptionODE(voxel_grid,network_query_fn_ior,network_ior,N_samples,step_size,bb_vals,scene_bound), y0, t_vals,method='euler')
+    output = odeint(IoR_emissionAbsorptionODE(voxel_grid,network_query_fn_ior,network_ior,N_samples,step_size,voxel_grid_mlp,scene_bound), y0, t_vals,method='euler')
+
     pts = output[:,:,0:3].permute(1,0,2)
    
     rgb_map = output[-1,:,6:9]
@@ -669,8 +689,9 @@ def train():
     
     
     print('loading mask images')
-    path_mask = os.path.join(basedir, expname, 'masked_regions')
-    inside_idx = get_mask_idx(path_mask,len(poses),i_train) # concatenating the indices of masked region in each view 
+    # path_mask = os.path.join(basedir, expname, 'masked_regions')
+    # inside_idx = get_mask_idx(path_mask,len(poses),i_train) # concatenating the indices of masked region in each view
+    inside_idx = get_mask_idx(images[..., 0] > 0.0, len(poses), i_train)
     
     
     print('calculating the scene bounds for 3D grid')
@@ -678,14 +699,23 @@ def train():
     
     render_kwargs_test['scene_bound'] = scene_bound
     render_kwargs_train['scene_bound'] = scene_bound
-    
-    
-    print('loading bounding box values')
-    bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box/bounding_box_vals.npy'))
-    
-    
-    render_kwargs_test['bb_vals'] = bounding_box_vals
-    render_kwargs_train['bb_vals'] = bounding_box_vals
+
+    print('loading voxel grid mlp')
+    input_size = 3  # Number of coordinates per point
+    hidden_size = 64  # Number of neurons in the hidden layer
+    hidden_layer_num = 2  # Number of hidden layers
+    output_size = 2  # Number of labels
+    voxel_grid_mlp = voxel_grid_MLP(input_size, hidden_size, hidden_layer_num, output_size).to(device)
+    voxel_grid_mlp.load_state_dict(torch.load(os.path.join(args.datadir, 'voxel_grid_mlp.pth')))
+
+    render_kwargs_train['voxel_grid_mlp'] = voxel_grid_mlp
+    render_kwargs_test['voxel_grid_mlp'] = voxel_grid_mlp
+
+    # print('loading bounding box values')
+    # bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box/bounding_box_vals.npy'))
+
+    # render_kwargs_test['bb_vals'] = bounding_box_vals
+    # render_kwargs_train['bb_vals'] = bounding_box_vals
     
     
     print('fitting a 3D grid to learnt radiance field (Nerf)')
@@ -700,7 +730,8 @@ def train():
     if reuse:
         voxel_grid = torch.tensor(np.load(testimgdir)).to(device)
     else:
-        voxel_grid = get_voxel_grid(Grid_res,scene_bound,poses[0:-1:skip_im],query_function,nerf_coarse_model,False,bounding_box_vals)
+        # voxel_grid = get_voxel_grid(Grid_res,scene_bound,poses[0:-1:skip_im],query_function,nerf_coarse_model,False,bounding_box_vals)
+        voxel_grid = get_voxel_grid(Grid_res,scene_bound,poses[0:-1:skip_im],query_function,nerf_coarse_model)
         np.save(testimgdir,voxel_grid.cpu().numpy())
     
     
@@ -744,9 +775,10 @@ def train():
     
         loss = img2mse(rgb, target_s)
         psnr = mse2psnr(loss)
+
+        print(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
     
-    
-    
+
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -758,9 +790,9 @@ def train():
             param_group['lr'] = new_lrate
         ################################
     
-        dt = time.time()-time0
+        # dt = time.time()-time0
        
-        loss_vals.append(loss.detach().cpu().numpy())
+        # loss_vals.append(loss.detach().cpu().numpy())
     
         
         if i%args.i_weights==0:
@@ -796,8 +828,8 @@ def train():
                 # plt.plot(loss_vals)
                 # plt.show()
     
-        if i%args.i_print==0:
-            tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
+        # if i%args.i_print==0:
+        #     tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")
        
     
         global_step += 1
