@@ -430,7 +430,7 @@ def get_voxel_grid(voxel_res,scene_bound,poses,query_fn,nerf_model,masking=False
     for cam in tqdm(range(len(poses))):
         
         raw_stack = []
-        pose = poses[cam,:,-1]
+        pose = poses[cam,:-1,-1]
 
         batch = 128*128*128
         for ii in range(0,pts_.shape[0],batch):
