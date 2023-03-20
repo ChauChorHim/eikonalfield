@@ -1,5 +1,5 @@
 expname = Pen
-datadir = data\Pen
+datadir = data/Pen
 basedir = logs
 dataset_type = llff
 
