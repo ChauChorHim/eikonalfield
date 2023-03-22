@@ -317,8 +317,9 @@ class IoR_emissionAbsorptionODE(nn.Module):
         
         
         pts = y[:,0:3]
-        ray_dir = y[:,3:6]
-        transmition_ = y[:,9:10] 
+        # ray_dir = y[:,3:6]
+        omega = y[:,3:6]
+        transmition_ = y[:,9:10]
         
         
         # querying the original radiance field for the entire scene 
@@ -376,13 +377,22 @@ class IoR_emissionAbsorptionODE(nn.Module):
                     ior_grad[insides,:] = dn[1]*(1.-weights[insides,:])
 
         
-        dv_ds = steps*ior_grad
-        dx_ds = steps*normalizing(ray_dir)
-        alpha = 1. - torch.exp(-density*steps/self.n_samples)
-        alpha = alpha.clip(0.,1.)
-        dc_dt = transmition_*rgb*alpha*self.n_samples
-        dT_dt = -transmition_*alpha*self.n_samples
-        dy_dt = torch.cat([dx_ds,dv_ds,dc_dt,dT_dt],-1)
+        # dv_ds = steps*ior_grad
+        # dx_ds = steps*normalizing(ray_dir)
+        # alpha = 1. - torch.exp(-density*steps/self.n_samples)
+        # alpha = alpha.clip(0.,1.)
+        # dc_dt = transmition_*rgb*alpha*self.n_samples
+        # dT_dt = -transmition_*alpha*self.n_samples
+        # dy_dt = torch.cat([dx_ds,dv_ds,dc_dt,dT_dt],-1)
+
+
+        domega_ds = ior_grad - omega * torch.einsum('ij, ij->i', omega, ior_grad).reshape(-1, 1)
+        dx_ds = omega
+        alpha = 1. - torch.exp(-density * self.step_size / self.n_samples)
+        alpha = alpha.clip(0., 1.)
+        dc_dt = transmition_ * rgb * alpha * self.n_samples
+        dT_dt = -transmition_ * alpha * self.n_samples
+        dy_dt = torch.cat([dx_ds, domega_ds, dc_dt, dT_dt], -1)
 
 
         return dy_dt
