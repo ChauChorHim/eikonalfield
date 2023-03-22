@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from tqdm import tqdm, trange
 from torchdiffeq import odeint_adjoint as odeint
 
+from voxel_grid_to_network import voxel_grid_MLP
+
 import matplotlib.pyplot as plt
 
 from run_nerf_helpers import *
@@ -292,8 +294,8 @@ def create_models(args):
 
 
 class IoR_emissionAbsorptionODE(nn.Module):
-
-    def __init__(self,query_nerf,model_nerf,nerf_inside,query_ior,model_ior,n_samples,step_size,vals,viewdir,mode):
+    # def __init__(self,query_nerf,model_nerf,nerf_inside,query_ior,model_ior,n_samples,step_size,vals,viewdir,mode):
+    def __init__(self,query_nerf,model_nerf,nerf_inside,query_ior,model_ior,n_samples,step_size,viewdir,mode,voxel_grid_mlp):
         super(IoR_emissionAbsorptionODE, self).__init__()
 
         self.query_ior = query_ior
@@ -306,7 +308,8 @@ class IoR_emissionAbsorptionODE(nn.Module):
         
         self.n_samples = n_samples
         self.step_size = step_size
-        self.vals = vals
+        # self.vals = vals
+        self.voxel_grid_mlp = voxel_grid_mlp
         self.viewdir = viewdir
         self.mode = mode
 
@@ -326,7 +329,10 @@ class IoR_emissionAbsorptionODE(nn.Module):
         density = F.relu(raw[...,3:])
   
         # determining whether a point is inside the bounding box or not  
-        weights= get_bb_weights(pts,self.vals)
+        # weights= get_bb_weights(pts,self.vals)
+        outputs = self.voxel_grid_mlp(pts)
+        _, weights = torch.min(outputs.data, 1)
+        weights = weights.reshape((-1, 1))
 
         # finding the points inside the bounding box
 
@@ -349,7 +355,8 @@ class IoR_emissionAbsorptionODE(nn.Module):
 
                 
                 if self.mode == 1:
-                    density = density*weights
+                    # density = density*weights
+                    pass
 
                 if self.mode == 2:
                     raw = self.query_nerf(pts_inside,viewdir_inside,self.nerf_inside)        
@@ -384,7 +391,8 @@ class IoR_emissionAbsorptionODE(nn.Module):
 def render_rays(ray_batch,
                 N_samples,
                 network_query_fn_ior,
-                bb_vals,
+                # bb_vals,
+                voxel_grid_mlp,
                 network_fine,
                 network_ior,
                 network_inside,
@@ -416,8 +424,9 @@ def render_rays(ray_batch,
     
     y0 = torch.cat((pts,viewdir,color_,transmition_),-1).to(device) 
     step_size = (far[0]-near[0])
-    output = odeint(IoR_emissionAbsorptionODE(network_query_fn,network_fine,network_inside,network_query_fn_ior,network_ior,N_samples,step_size,bb_vals,viewdir,mode), y0, t_vals,method='euler')
-    
+    # output = odeint(IoR_emissionAbsorptionODE(network_query_fn,network_fine,network_inside,network_query_fn_ior,network_ior,N_samples,step_size,bb_vals,viewdir,mode), y0, t_vals,method='euler')
+    output = odeint(IoR_emissionAbsorptionODE(network_query_fn,network_fine,network_inside,network_query_fn_ior,network_ior,N_samples,step_size,viewdir,mode,voxel_grid_mlp), y0, t_vals,method='euler')
+
     pts = output[:,:,0:3].permute(1,0,2)
    
     rgb_map = output[-1,:,6:9]
@@ -613,8 +622,21 @@ def main():
             far = 1.
         if args.spherify:
             far = np.minimum(far,2.5)    
-        print('NEAR FAR', near, far)    
-    
+        print('NEAR FAR', near, far)
+
+    elif args.dataset_type == 'blender':
+        images, poses, render_poses, hwf, i_split = load_blender_data(args.datadir, args.half_res, args.testskip)
+        print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
+        i_train, i_val, i_test = i_split
+
+        near = 0.6
+        far = 1.0
+
+        if args.white_bkgd:
+            images = images[..., :3] * images[..., -1:] + (1. - images[..., -1:])
+        else:
+            images = images[..., :3]
+
      # Cast intrinsics to right types
     H, W, focal = hwf
     H, W = int(H), int(W)
@@ -655,11 +677,22 @@ def main():
     
     render_kwargs_test.update(bds_dict)
     render_kwargs_test['mode'] = args.mode
-    
-    print('loading bounding box values')
-    bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box\\bounding_box_vals.npy'))
-    
-    render_kwargs_test['bb_vals'] = bounding_box_vals
+
+    print('loading voxel grid mlp')
+    input_size = 3  # Number of coordinates per point
+    hidden_size = 64  # Number of neurons in the hidden layer
+    hidden_layer_num = 2  # Number of hidden layers
+    output_size = 2  # Number of labels
+    voxel_grid_mlp = voxel_grid_MLP(input_size, hidden_size, hidden_layer_num, output_size).to(device)
+    voxel_grid_mlp.load_state_dict(torch.load(os.path.join(args.datadir, 'voxel_grid_mlp.pth')))
+
+    render_kwargs_train['voxel_grid_mlp'] = voxel_grid_mlp
+    render_kwargs_test['voxel_grid_mlp'] = voxel_grid_mlp
+
+    # print('loading bounding box values')
+    # bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box/bounding_box_vals.npy'))
+    #
+    # render_kwargs_test['bb_vals'] = bounding_box_vals
     
     
     with torch.no_grad():

@@ -187,47 +187,6 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     return ret_list + [ret_dict]
 
 
-def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedir=None, render_factor=0):
-
-    H, W, focal = hwf
-
-    if render_factor!=0:
-        # Render downsampled for speed
-        H = H//render_factor
-        W = W//render_factor
-        focal = focal/render_factor
-
-    rgbs = []
-    disps = []
-
-    t = time.time()
-    for i, c2w in enumerate(tqdm(render_poses)):
-        print(i, time.time() - t)
-        t = time.time()
-        rgb, disp, acc, extras = render(H, W, K, chunk=chunk, c2w=c2w[:3,:4], **render_kwargs)
-        rgbs.append(rgb.cpu().numpy())
-        disps.append(disp.cpu().numpy())
-        if i==0:
-            print(rgb.shape, disp.shape)
-
-        """
-        if gt_imgs is not None and render_factor==0:
-            p = -10. * np.log10(np.mean(np.square(rgb.cpu().numpy() - gt_imgs[i])))
-            print(p)
-        """
-
-        if savedir is not None:
-            rgb8 = to8b(rgbs[-1])
-            filename = os.path.join(savedir, '{:03d}.png'.format(i))
-            imageio.imwrite(filename, rgb8)
-
-
-    rgbs = np.stack(rgbs, 0)
-    disps = np.stack(disps, 0)
-
-    return rgbs, disps
-
-
 def create_models(args):
     """Instantiate NeRF and IOR MLP models.
     """
@@ -659,17 +618,7 @@ def train():
     basedir = args.basedir
     expname = args.expname
     os.makedirs(os.path.join(basedir, expname), exist_ok=True)
-    f = os.path.join(basedir, expname, 'args.txt')
-    with open(f, 'w') as file:
-        for arg in sorted(vars(args)):
-            attr = getattr(args, arg)
-            file.write('{} = {}\n'.format(arg, attr))
-    if args.config is not None:
-        f = os.path.join(basedir, expname, 'config.txt')
-        with open(f, 'w') as file:
-            file.write(open(args.config, 'r').read())
-    
-    
+
     
     render_kwargs_train, render_kwargs_test, start, grad_vars, optimizer = create_models(args)
     start = 0
@@ -694,13 +643,14 @@ def train():
     rays_rgb = [rays_rgb[i] for i in i_train] # train images only
     
     poses = torch.Tensor(poses).to(device)
-    render_poses = torch.Tensor(render_poses).to(device)
-    
-    
+    # render_poses = torch.Tensor(render_poses).to(device)
+
     print('loading mask images')
-    # path_mask = os.path.join(basedir, expname, 'masked_regions')
-    # inside_idx = get_mask_idx(path_mask,len(poses),i_train) # concatenating the indices of masked region in each view
-    inside_idx = get_mask_idx(images[..., 0] > 0.0, len(poses), i_train)
+    if args.dataset_type == 'llff':
+        path_mask = os.path.join(basedir, expname, 'masked_regions')
+        inside_idx = get_mask_idx(path_mask,len(poses),i_train) # concatenating the indices of masked region in each view
+    elif args.dataset_type == 'blender':
+        inside_idx = get_mask_idx(images[..., 0] > 0.0, len(poses), i_train)
     
     
     print('calculating the scene bounds for 3D grid')
@@ -805,37 +755,37 @@ def train():
     
         
         if i%args.i_weights==0:
-                model_path_dir = os.path.join(basedir, expname,args.model_path)
-                os.makedirs(model_path_dir, exist_ok=True)
-                path = os.path.join(basedir, expname,args.model_path, 'weights.tar'.format(i))
-                torch.save({
-                    'global_step': global_step,
-                    'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
-                    'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
-                    'network_ior_state_dict': render_kwargs_train['network_ior'].state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                }, path)
-                print('Saved checkpoints at', path)
+            model_path_dir = os.path.join(basedir, expname,args.model_path)
+            os.makedirs(model_path_dir, exist_ok=True)
+            path = os.path.join(basedir, expname,args.model_path, 'weights.tar'.format(i))
+            torch.save({
+                'global_step': global_step,
+                'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
+                'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
+                'network_ior_state_dict': render_kwargs_train['network_ior'].state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, path)
+            print('Saved checkpoints at', path)
     
     
     
         if i%args.i_img==0:
                 
-                render_kwargs_test['voxel_grid'] = voxel_grid  # rendering images with finest version of the grid
-                img_i= i_test[5]
-                pose = poses[img_i, :3,:4]
-                with torch.no_grad():
-                    rgb ,extras = render(H, W,K, chunk=args.chunk, c2w=pose,
-                                                        **render_kwargs_test)
-                
+            render_kwargs_test['voxel_grid'] = voxel_grid  # rendering images with finest version of the grid
+            img_i= i_test[5]
+            pose = poses[img_i, :3,:4]
+            with torch.no_grad():
+                rgb ,extras = render(H, W,K, chunk=args.chunk, c2w=pose,
+                                                    **render_kwargs_test)
+
             
-                testimgdir = os.path.join(basedir, expname, 'training_ior')
-                os.makedirs(testimgdir, exist_ok=True)                    
-                imageio.imwrite(os.path.join(testimgdir, 'rendered_{:03d}.png'.format(i)), to8b(rgb.cpu().numpy()))
-                imageio.imwrite(os.path.join(testimgdir, 'ref_{:03d}.png'.format(img_i)), to8b(images[img_i]))
+            testimgdir = os.path.join(basedir, expname, 'training_ior')
+            os.makedirs(testimgdir, exist_ok=True)
+            imageio.imwrite(os.path.join(testimgdir, 'rendered_{:03d}.png'.format(i)), to8b(rgb.cpu().numpy()))
+            imageio.imwrite(os.path.join(testimgdir, 'ref_{:03d}.png'.format(img_i)), to8b(images[img_i]))
     
-                # plt.plot(loss_vals)
-                # plt.show()
+            # plt.plot(loss_vals)
+            # plt.show()
     
         # if i%args.i_print==0:
         #     tqdm.write(f"[TRAIN] Iter: {i} Loss: {loss.item()}  PSNR: {psnr.item()}")

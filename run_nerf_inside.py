@@ -685,7 +685,7 @@ def train():
     
     
     print('loading bounding box values')
-    bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box\\bounding_box_vals.npy'))
+    bounding_box_vals = np.load(os.path.join(basedir, expname, 'bounding_box/bounding_box_vals.npy'))
     
     
     render_kwargs_test['bb_vals'] = bounding_box_vals
