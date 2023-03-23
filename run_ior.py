@@ -21,6 +21,7 @@ from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
 from load_LINEMOD import load_LINEMOD_data
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,20 +41,20 @@ def get_rnd(all_rays,all_idx_inside,num_ray):
             
     return torch.cat(all_,0)
 
-# def get_mask_idx(path_to_mask, num_im, i_train):
-#     mask_ = []
-#     for img_i in range(num_im):
-#         im = imageio.imread(os.path.join(path_to_mask, 'img_%0.3d.png' % (img_i)))
-#         im = np.float32(im) / 255.0
-#         im = im.reshape([-1])
-#         inside = np.where(im == 1.0)[0]
-#         mask_.append(inside)
-#
-#     mask = [mask_[i] for i in i_train]
-#
-#     return mask
+def get_mask_idx(path_to_mask, num_im, i_train):
+    mask_ = []
+    for img_i in range(num_im):
+        im = imageio.imread(path_to_mask[img_i])
+        im = np.float32(im[..., 0]) / 255.0
+        im = im.reshape([-1])
+        inside = np.where(im == 1.0)[0]
+        mask_.append(inside)
 
-def get_mask_idx(masks,num_im,i_train):
+    mask = [mask_[i] for i in i_train]
+
+    return mask
+
+def get_mask_idx_blender(masks,num_im,i_train):
     
     mask_ = []
     for img_i in range(num_im):
@@ -308,8 +309,7 @@ class IoR_emissionAbsorptionODE(nn.Module):
         
         
         pts = y[:,0:3]
-        # ray_dir = y[:,3:6]
-        omega = y[:,3:6]
+        ray_dir = y[:,3:6]
         transmition_ = y[:,9:10]
         
         # query the 3D grid with trilinear interpolation
@@ -331,7 +331,7 @@ class IoR_emissionAbsorptionODE(nn.Module):
 
 
         # setting the density to zero for the points inside the bounding box
-        # density= density*weights
+        density= density*weights
 
         torch.cuda.empty_cache()
         
@@ -347,21 +347,13 @@ class IoR_emissionAbsorptionODE(nn.Module):
 
     
     
-        # dv_ds = self.step_size*ior_grad
-        # dx_ds = self.step_size*normalizing(ray_dir)
-        # alpha = 1. - torch.exp(-density*self.step_size/self.n_samples)
-        # alpha = alpha.clip(0.,1.)
-        # dc_dt = transmition_*rgb*alpha*self.n_samples
-        # dT_dt = -transmition_*alpha*self.n_samples
-        # dy_dt = torch.cat([dx_ds,dv_ds,dc_dt,dT_dt],-1)
-
-        domega_ds = ior_grad - omega * torch.einsum('ij, ij->i', omega, ior_grad).reshape(-1, 1)
-        dx_ds = omega
-        alpha = 1. - torch.exp(-density * self.step_size / self.n_samples)
-        alpha = alpha.clip(0., 1.)
-        dc_dt = transmition_ * rgb * alpha * self.n_samples
-        dT_dt = -transmition_ * alpha * self.n_samples
-        dy_dt = torch.cat([dx_ds, domega_ds, dc_dt, dT_dt], -1)
+        dv_ds = self.step_size*ior_grad
+        dx_ds = self.step_size*normalizing(ray_dir)
+        alpha = 1. - torch.exp(-density*self.step_size/self.n_samples)
+        alpha = alpha.clip(0.,1.)
+        dc_dt = transmition_*rgb*alpha*self.n_samples
+        dT_dt = -transmition_*alpha*self.n_samples
+        dy_dt = torch.cat([dx_ds,dv_ds,dc_dt,dT_dt],-1)
 
 
         return dy_dt
@@ -647,10 +639,16 @@ def train():
 
     print('loading mask images')
     if args.dataset_type == 'llff':
-        path_mask = os.path.join(basedir, expname, 'masked_regions')
-        inside_idx = get_mask_idx(path_mask,len(poses),i_train) # concatenating the indices of masked region in each view
+
+        path_masks = os.listdir(os.path.join(args.datadir, 'masks'))
+        path_masks.sort()
+
+        for i in range(len(path_masks)):
+            path_masks[i] = os.path.join(args.datadir, 'masks', path_masks[i])
+
+        inside_idx = get_mask_idx(path_masks, len(poses), i_train) # concatenating the indices of masked region in each view
     elif args.dataset_type == 'blender':
-        inside_idx = get_mask_idx(images[..., 0] > 0.0, len(poses), i_train)
+        inside_idx = get_mask_idx_blender(images[..., 0] > 0.0, len(poses), i_train)
     
     
     print('calculating the scene bounds for 3D grid')
